@@ -475,7 +475,7 @@ void _dispatch_bug_mach_client(const char *msg, mach_msg_return_t kr);
 
 struct dispatch_unote_class_s;
 
-#if HAVE_MACH
+#if HAVE_MACH || defined(__FreeBSD__)
 DISPATCH_NOINLINE DISPATCH_COLD
 void _dispatch_bug_kevent_client(const char *msg, const char *filter,
 		const char *operation, int err, uint64_t ident, uint64_t udata,
@@ -1093,6 +1093,18 @@ extern bool _dispatch_kevent_workqueue_enabled;
 #else
 #define _dispatch_kevent_workqueue_enabled (0)
 #endif // DISPATCH_USE_KEVENT_WORKQUEUE
+/*
+
+#ifdef __FreeBSD__
+#undef DISPATCH_USE_KEVENT_QOS
+#endif
+#if !defined(EV_SET_QOS) //|| !DISPATCH_HOST_SUPPORTS_OSX(101100)
+#undef DISPATCH_USE_KEVENT_QOS
+//#define DISPATCH_USE_KEVENT_QOS 0
+#elif !defined(DISPATCH_USE_KEVENT_QOS)
+#define DISPATCH_USE_KEVENT_QOS 1
+#endif // EV_SET_QOS
+*/
 
 #if DISPATCH_USE_KEVENT_WORKLOOP
 #if !DISPATCH_USE_KEVENT_WORKQUEUE || !DISPATCH_USE_KEVENT_QOS

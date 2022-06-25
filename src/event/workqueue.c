@@ -94,6 +94,7 @@ _dispatch_workq_worker_register(dispatch_queue_global_t root_q)
 	dispatch_workq_monitor_t mon = &_dispatch_workq_monitors[bucket];
 	dispatch_assert(mon->dq == root_q);
 	dispatch_tid tid = _dispatch_tid_self();
+	fprintf(stderr, "_dispatch_workq_worker_register tid=%d\n", tid);
 	_dispatch_unfair_lock_lock(&mon->registered_tid_lock);
 	dispatch_assert(mon->num_registered_tids < WORKQ_MAX_TRACKED_TIDS-1);
 	int worker_id = mon->num_registered_tids++;
@@ -114,6 +115,8 @@ _dispatch_workq_worker_unregister(dispatch_queue_global_t root_q)
 	dispatch_workq_monitor_t mon = &_dispatch_workq_monitors[bucket];
 	dispatch_assert(mon->dq == root_q);
 	dispatch_tid tid = _dispatch_tid_self();
+	fprintf(stderr, "_dispatch_workq_worker_unregister tid=%d\n", tid);
+
 	_dispatch_unfair_lock_lock(&mon->registered_tid_lock);
 	for (int i = 0; i < mon->num_registered_tids; i++) {
 		if (mon->registered_tids[i] == tid) {
@@ -132,7 +135,7 @@ _dispatch_workq_worker_unregister(dispatch_queue_global_t root_q)
 
 
 #if HAVE_DISPATCH_WORKQ_MONITORING
-#if defined(__linux__)
+#if defined(__linux__) || defined(__FreeBSD__)
 /*
  * For each pid that is a registered worker, read /proc/[pid]/stat
  * to get a count of the number of them that are actually runnable.
@@ -145,6 +148,8 @@ _dispatch_workq_count_runnable_workers(dispatch_workq_monitor_t mon)
 	char buf[4096];
 	int running_count = 0;
 
+	fprintf(stderr, "_dispatch_workq_count_runnable_workers::START\n");
+
 	_dispatch_unfair_lock_lock(&mon->registered_tid_lock);
 
 	for (int i = 0; i < mon->num_registered_tids; i++) {
@@ -152,13 +157,13 @@ _dispatch_workq_count_runnable_workers(dispatch_workq_monitor_t mon)
 		int fd;
 		ssize_t bytes_read = -1;
 
-		int r = snprintf(path, sizeof(path), "/proc/%d/stat", tid);
+		int r = snprintf(path, sizeof(path), "/proc/%d/status", getpid());
 		dispatch_assert(r > 0 && r < (int)sizeof(path));
 
 		fd = open(path, O_RDONLY | O_NONBLOCK);
 		if (unlikely(fd == -1)) {
-			DISPATCH_CLIENT_CRASH(tid,
-					"workq: registered worker exited prematurely");
+			fprintf(stderr, "_dispatch_workq_count_runnable_workers::failed to open %s\n", path);
+			DISPATCH_CLIENT_CRASH(tid,"workq: registered worker exited prematurely");
 		} else {
 			bytes_read = read(fd, buf, sizeof(buf)-1);
 			(void)close(fd);

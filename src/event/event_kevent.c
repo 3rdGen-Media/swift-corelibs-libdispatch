@@ -25,6 +25,16 @@
 #include "protocolServer.h"
 #endif
 
+
+//#if !defined(EV_SET_QOS) //|| !DISPATCH_HOST_SUPPORTS_OSX(101100)
+//#ifdef __FreeBSD__
+//#undef DISPATCH_USE_KEVENT_QOS
+//#endif
+//#define DISPATCH_USE_KEVENT_QOS 0
+//#elif !defined(DISPATCH_USE_KEVENT_QOS)
+//#define DISPATCH_USE_KEVENT_QOS 1
+//#endif // EV_SET_QOS
+
 #if DISPATCH_USE_KEVENT_WORKQUEUE && !DISPATCH_USE_KEVENT_QOS
 #error unsupported configuration
 #endif
@@ -365,11 +375,12 @@ static void
 _dispatch_kevent_print_error(dispatch_kevent_t ke)
 {
 	dispatch_unote_class_t du = NULL;
-	_dispatch_debug("kevent[0x%llx]: handling error",
-			(unsigned long long)ke->udata);
+	fprintf(stderr, "kevent[0x%llx]: handling error\n", (unsigned long long)ke->udata);
+	_dispatch_debug("kevent[0x%llx]: handling error", (unsigned long long)ke->udata);
 	if (ke->flags & EV_DELETE) {
 		if (ke->flags & EV_UDATA_SPECIFIC) {
 			if (ke->data == EINPROGRESS) {
+				fprintf(stderr, "_dispatch_kevent_print_error deferred EV_DELETE\n");
 				// deferred EV_DELETE
 				return;
 			}
@@ -387,17 +398,28 @@ _dispatch_kevent_print_error(dispatch_kevent_t ke)
 
 	switch (ke->data) {
 	case 0:
+		fprintf(stderr, "_dispatch_kevent_print_error case 0\n");
 		return;
 	case ERANGE: /* A broken QoS was passed to kevent_id() */
+#ifdef DISPATCH_USE_KEVENT_QOS
+		assert(1==0);
+#else
 		DISPATCH_INTERNAL_CRASH(ke->qos, "Invalid kevent priority");
+#endif
 	default:
 		// log the unexpected error
+		fprintf(stderr, "kevent %s [%d | %d | %d] data(%d) ident(%lu) udata(%" PRIu64  ")\n", _evfiltstr(ke->filter), 
+													!ke->udata ? 0 : ke->flags & EV_DELETE, 
+													!ke->udata ? 0 : ke->flags & EV_ADD,
+													!ke->udata ? 0 : ke->flags & EV_ENABLE,
+													(int)ke->data, ke->ident, (uint64_t)(ke->udata));
+				
 		_dispatch_bug_kevent_client("kevent", _evfiltstr(ke->filter),
 				!ke->udata ? NULL :
 				ke->flags & EV_DELETE ? "delete" :
 				ke->flags & EV_ADD ? "add" :
 				ke->flags & EV_ENABLE ? "enable" : "monitor",
-				(int)ke->data, ke->ident, ke->udata, du);
+				(int)ke->data, ke->ident, (uint64_t)(ke->udata), du);
 	}
 }
 
@@ -591,7 +613,7 @@ _dispatch_kq_create(intptr_t *fd_ptr)
 	guardid_t guard = (uintptr_t)fd_ptr;
 	kqfd = guarded_kqueue_np(&guard, GUARD_CLOSE | GUARD_DUP);
 #else
-	(void)guard_ptr;
+	(void)fd_ptr;
 	kqfd = kqueue();
 #endif
 	if (kqfd == -1) {
@@ -860,7 +882,7 @@ _dispatch_kq_unote_set_kevent(dispatch_unote_t _du, dispatch_kevent_t dk,
 				du->du_priority),
 #endif
 	};
-	(void)pp; // if DISPATCH_USE_KEVENT_QOS == 0
+	//(void)pp; // if DISPATCH_USE_KEVENT_QOS == 0
 }
 
 DISPATCH_ALWAYS_INLINE
@@ -986,6 +1008,7 @@ _dispatch_sync_ipc_handoff_end(dispatch_wlh_t wlh, mach_port_t port)
 #endif
 
 DISPATCH_NOINLINE
+__attribute__((unused))
 static bool
 _dispatch_kq_unote_update(dispatch_wlh_t wlh, dispatch_unote_t _du,
 		uint16_t action_flags)
@@ -1316,6 +1339,8 @@ static char const * const _dispatch_workloop_actions[] = {
 	[DISPATCH_WORKLOOP_SYNC_WAKE]                   = "sync-wake",
 	[DISPATCH_WORKLOOP_SYNC_END]                    = "sync-end",
 };
+
+#pragma unused(_dispatch_workloop_actions)
 
 void
 _dispatch_event_loop_atfork_child(void)

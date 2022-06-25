@@ -56,20 +56,67 @@ _dispatch_lock_owner(dispatch_lock lock_value)
 	return DLOCK_OWNER_NULL;
 }
 
-#elif defined(__linux__)
+#elif defined(__linux__) //|| defined(__FreeBSD__)
 
-#include <linux/futex.h>
+//#include <linux/futex.h>
 #include <unistd.h>
 #include <sys/syscall.h>   /* For SYS_xxx definitions */
 
 typedef uint32_t dispatch_tid;
 typedef uint32_t dispatch_lock;
 
+#ifndef 	FUTEX_TID_MASK
+#define 	FUTEX_TID_MASK  	 0x3fffffff
+#define 	FUTEX_WAITERS  		 0x80000000
+#define 	FUTEX_OWNER_DIED   	 0x40000000
+#endif
+
+#define DLOCK_OWNER_NULL			((dispatch_tid)0)
+#define DLOCK_OWNER_MASK			((dispatch_lock)FUTEX_TID_MASK)
+#define DLOCK_WAITERS_BIT			((dispatch_lock)FUTEX_WAITERS)
+#define DLOCK_FAILED_TRYLOCK_BIT	((dispatch_lock)FUTEX_OWNER_DIED)
+//#define DLOCK_OWNER_MASK			((dispatch_lock)0xfffffffc)
+//#define DLOCK_WAITERS_BIT			((dispatch_lock)0x00000001)
+//#define DLOCK_FAILED_TRYLOCK_BIT	((dispatch_lock)0x00000002)
+
+#define _dispatch_tid_self()        ((dispatch_tid)(_dispatch_get_tsd_base()->tid))
+
+DISPATCH_ALWAYS_INLINE
+static inline dispatch_tid
+_dispatch_lock_owner(dispatch_lock lock_value)
+{
+	return lock_value & DLOCK_OWNER_MASK;
+}
+
+#elif defined(__FreeBSD__)
+
+#include <unistd.h>
+#include <sys/syscall.h>   /* For SYS_xxx definitions */
+
+typedef uint32_t dispatch_tid;
+typedef uint32_t dispatch_lock;
+
+#ifndef 	FUTEX_TID_MASK
+#define 	FUTEX_TID_MASK  	 0x3fffffff
+#define 	FUTEX_WAITERS  		 0x80000000
+#define 	FUTEX_OWNER_DIED   	 0x40000000
+#endif
+
+#ifndef 	FUTEX_WAIT
+#define 	FUTEX_WAIT			UMTX_OP_WAIT
+#define 	FUTEX_WAKE			UMTX_OP_WAKE
+#define 	FUTEX_LOCK_PI		UMTX_OP_MUTEX_LOCK
+#define 	FUTEX_UNLOCK_PI		UMTX_OP_MUTEX_UNLOCK
+#define 	FUTEX_TRYLOCK_PI 	UMTEX_OP_MUTEX_TRYLOCK
+#define 	FUTEX_PRIVATE_FLAG  UMTX_OP_WAKE_PRIVATE | UMTX_OP_WAIT_UINT_PRIVATE
+#else
+#endif
+
+#define DLOCK_OWNER_NULL			((dispatch_tid)0)
 #define DLOCK_OWNER_MASK			((dispatch_lock)FUTEX_TID_MASK)
 #define DLOCK_WAITERS_BIT			((dispatch_lock)FUTEX_WAITERS)
 #define DLOCK_FAILED_TRYLOCK_BIT	((dispatch_lock)FUTEX_OWNER_DIED)
 
-#define DLOCK_OWNER_NULL			((dispatch_tid)0)
 #define _dispatch_tid_self()        ((dispatch_tid)(_dispatch_get_tsd_base()->tid))
 
 DISPATCH_ALWAYS_INLINE
@@ -167,7 +214,7 @@ _dispatch_lock_has_failed_trylock(dispatch_lock lock_value)
 #endif
 
 #ifndef HAVE_FUTEX
-#ifdef __linux__
+#if defined(__linux__) || defined(__FreeBSD__)
 #define HAVE_FUTEX 1
 #else
 #define HAVE_FUTEX 0

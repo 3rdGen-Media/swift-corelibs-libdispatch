@@ -23,6 +23,10 @@
 #if defined(__FreeBSD__)
 #include <fcntl.h>
 #define F_RDADVISE F_RDAHEAD
+struct radvisory {
+	off_t ra_offset;
+	int   ra_count;
+};
 #endif
 
 #ifndef DISPATCH_IO_DEBUG

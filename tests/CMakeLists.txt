@@ -1,3 +1,4 @@
+option(EXTENDED_TEST_SUITE "Builds VAuth with OpenSSL SHA256 HASH/HMAC Support for RethinkDB connection authentication handshake" ON)
 
 if(CMAKE_SYSTEM_NAME STREQUAL Windows)
     execute_process(COMMAND

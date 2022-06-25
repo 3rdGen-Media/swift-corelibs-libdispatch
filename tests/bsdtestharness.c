@@ -211,7 +211,7 @@ main(int argc, char *argv[])
 #else
 	dispatch_queue_t main_q = dispatch_get_main_queue();
 
-	dispatch_source_t tmp_ds = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, pid, DISPATCH_PROC_EXIT, main_q);
+	dispatch_source_t tmp_ds = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC, (uintptr_t)pid, DISPATCH_PROC_EXIT, main_q);
 	assert(tmp_ds);
 	dispatch_source_set_event_handler(tmp_ds, ^{
 		int status;
@@ -221,14 +221,14 @@ main(int argc, char *argv[])
 		gettimeofday(&tv_stop, NULL);
 		tv_wall.tv_sec = tv_stop.tv_sec - tv_start.tv_sec;
 		tv_wall.tv_sec -= (tv_stop.tv_usec < tv_start.tv_usec);
-		tv_wall.tv_usec = abs(tv_stop.tv_usec - tv_start.tv_usec);
+		tv_wall.tv_usec = labs(tv_stop.tv_usec - tv_start.tv_usec);
 
 		int res2 = wait4(pid, &status, 0, &usage);
 		assert(res2 != -1);
 		test_long("Process exited", (WIFEXITED(status) && WEXITSTATUS(status) && WEXITSTATUS(status) != 0xff) || WIFSIGNALED(status), 0);
-		printf("[PERF]\twall time: %ld.%06d\n", tv_wall.tv_sec, tv_wall.tv_usec);
-		printf("[PERF]\tuser time: %ld.%06d\n", usage.ru_utime.tv_sec, usage.ru_utime.tv_usec);
-		printf("[PERF]\tsystem time: %ld.%06d\n", usage.ru_stime.tv_sec, usage.ru_stime.tv_usec);
+		printf("[PERF]\twall time: %ld.%06d\n", tv_wall.tv_sec, (int)tv_wall.tv_usec);
+		printf("[PERF]\tuser time: %ld.%06d\n", usage.ru_utime.tv_sec, (int)usage.ru_utime.tv_usec);
+		printf("[PERF]\tsystem time: %ld.%06d\n", usage.ru_stime.tv_sec, (int)usage.ru_stime.tv_usec);
 		printf("[PERF]\tmax resident set size: %ld\n", usage.ru_maxrss);
 		printf("[PERF]\tpage faults: %ld\n", usage.ru_majflt);
 		printf("[PERF]\tswaps: %ld\n", usage.ru_nswap);
@@ -253,7 +253,7 @@ main(int argc, char *argv[])
 #endif
 	}
 
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, to), main_q, ^{
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)to), main_q, ^{
 		kill(pid, SIGKILL);
 		fprintf(stderr, "Terminating unresponsive process (%0.1lfs)\n", (double)to / NSEC_PER_SEC);
 	});
@@ -267,9 +267,12 @@ main(int argc, char *argv[])
 	});
 	dispatch_resume(tmp_ds);
 
+#ifdef __APPLE__
 	if (spawnflags & POSIX_SPAWN_SETEXEC) {
 		usleep(USEC_PER_SEC/10);
 	}
+#endif
+
 	kill(pid, SIGCONT);
 
 	dispatch_main();

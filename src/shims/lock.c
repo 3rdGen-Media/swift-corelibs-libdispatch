@@ -395,7 +395,9 @@ _dispatch_unfair_lock_wake(uint32_t *uaddr, uint32_t flags)
 #ifdef __ANDROID__
 #include <sys/syscall.h>
 #else
-#include <syscall.h>
+#include <sys/types.h>
+#include <sys/syscall.h>
+#include <sys/umtx.h>
 #endif /* __ANDROID__ */
 
 DISPATCH_ALWAYS_INLINE
@@ -404,7 +406,47 @@ _dispatch_futex(uint32_t *uaddr, int op, uint32_t val,
 		const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3,
 		int opflags)
 {
+
+#ifdef __FreeBSD__
+#pragma unused(val3)
+#pragma unused(uaddr2)
+#pragma unused(opflags)
+	int umtx_op;
+	void *umtx_uaddr = NULL, *umtx_uaddr2 = NULL;
+	struct _umtx_time umtx_timeout = {
+		._flags = 0,
+		._clockid = CLOCK_MONOTONIC
+	};
+		//printf("_dispatch_futex START\n");
+	switch (op) {
+		case FUTEX_WAIT:
+		//printf("_dispatch_futex FUTEX_WAIT\n");
+		// on FreeBSD, a "u_int" is a 32-bit integer
+		umtx_op = UMTX_OP_WAIT_UINT;
+		if (timeout != NULL) {
+			umtx_timeout._timeout = *timeout;
+			umtx_uaddr = (void *)sizeof(umtx_timeout);
+			umtx_uaddr2 = (void *)&umtx_timeout;
+		}
+		break;
+
+	case FUTEX_WAKE:
+		//printf("_dispatch_futex FUTEX_WAKE\n");
+		umtx_op = UMTX_OP_WAKE;
+		break;
+
+	default:
+		printf("_dispatch_futex EINVAL\n");
+		errno = EINVAL;
+		return -1;
+	}
+
+	return _umtx_op(uaddr, umtx_op, (uint32_t)val, umtx_uaddr, umtx_uaddr2);
+#else
 	return (int)syscall(SYS_futex, uaddr, op | opflags, val, timeout, uaddr2, val3);
+#endif
+	//return (int)futex(uaddr, op | opflags, val, timeout, uaddr2, val3);
+
 }
 
 // returns 0, ETIMEDOUT, EFAULT, EINTR, EWOULDBLOCK
@@ -424,11 +466,14 @@ _futex_blocking_op(uint32_t *uaddr, int futex_op, uint32_t val,
 			 * if we have a timeout, we need to return for the caller to
 			 * recompute the new deadline, else just go back to wait.
 			 */
+			printf("_futex_blocking_op EINTR\n");
 			if (timeout == 0) {
 				continue;
 			}
 			DISPATCH_FALLTHROUGH;
 		case ETIMEDOUT:
+			printf("_futex_blocking_op ETIMEDOUT\n");
+			return errno;
 		case EFAULT:
 		case EWOULDBLOCK:
 			return errno;
@@ -482,8 +527,12 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 	uint32_t *address = (uint32_t *)_address;
 	uint64_t nsecs = _dispatch_timeout(timeout);
 	if (nsecs == 0) {
+		fprintf(stderr, "_dispatch_wait_on_address ETIMEDOUT\n");
 		return ETIMEDOUT;
 	}
+
+	fprintf(stderr, "_dispatch_wait_on_address nsecs: %" PRIu64  "\n", nsecs);
+
 #if HAVE_UL_COMPARE_AND_WAIT
 	uint64_t usecs = 0;
 	int rc;
@@ -504,9 +553,18 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 			.tv_sec = (__typeof__(ts.tv_sec))(nsecs / NSEC_PER_SEC),
 			.tv_nsec = (__typeof__(ts.tv_nsec))(nsecs % NSEC_PER_SEC),
 		};
+#ifdef __FreeBSD__
+		printf("_dispatch_wait_on_address FUTEX_WAIT");
+		return _dispatch_futex_wait(address, value, &ts, UMTX_OP_WAIT_UINT_PRIVATE);
+#else
 		return _dispatch_futex_wait(address, value, &ts, FUTEX_PRIVATE_FLAG);
+#endif
 	}
+#ifdef __FreeBSD__
+	return _dispatch_futex_wait(address, value, NULL, UMTX_OP_WAIT_UINT_PRIVATE);
+#else
 	return _dispatch_futex_wait(address, value, NULL, FUTEX_PRIVATE_FLAG);
+#endif
 #elif defined(_WIN32)
 	// Round up to the nearest ms as `WaitOnAddress` takes a timeout in ms.
 	// Integral division will truncate, so make sure that we do the roundup.
@@ -516,7 +574,13 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 	if (dwMilliseconds == 0) return ETIMEDOUT;
 	return WaitOnAddress(address, &value, sizeof(value), dwMilliseconds) == TRUE;
 #else
-#error _dispatch_wait_on_address unimplemented for this platform
+	#pragma unused(address)
+	#pragma unused(value)
+	#pragma unused(timeout)
+	#pragma unused(flags)
+
+	//#error _dispatch_wait_on_address unimplemented for this platform
+	assert(1==0);
 #endif
 }
 
@@ -526,7 +590,11 @@ _dispatch_wake_by_address(uint32_t volatile *address)
 #if HAVE_UL_COMPARE_AND_WAIT
 	_dispatch_ulock_wake((uint32_t *)address, ULF_WAKE_ALL);
 #elif HAVE_FUTEX
+#ifdef __FreeBSD__
+	_dispatch_futex_wake((uint32_t *)address, INT_MAX, UMTX_OP_WAKE_PRIVATE);
+#else
 	_dispatch_futex_wake((uint32_t *)address, INT_MAX, FUTEX_PRIVATE_FLAG);
+#endif
 #elif defined(_WIN32)
 	WakeByAddressAll((uint32_t *)address);
 #else
@@ -542,7 +610,11 @@ _dispatch_thread_event_signal_slow(dispatch_thread_event_t dte)
 #if HAVE_UL_COMPARE_AND_WAIT
 	_dispatch_ulock_wake(&dte->dte_value, 0);
 #elif HAVE_FUTEX
+#ifdef __FreeBSD__
+	_dispatch_futex_wake(&dte->dte_value, 1, UMTX_OP_WAKE_PRIVATE);
+#else
 	_dispatch_futex_wake(&dte->dte_value, 1, FUTEX_PRIVATE_FLAG);
+#endif
 #else
 	_dispatch_sema4_signal(&dte->dte_sema, 1);
 #endif
@@ -562,8 +634,11 @@ _dispatch_thread_event_wait_slow(dispatch_thread_event_t dte)
 		int rc = _dispatch_ulock_wait(&dte->dte_value, UINT32_MAX, 0, 0);
 		dispatch_assert(rc == 0 || rc == EFAULT || rc == EINTR);
 #elif HAVE_FUTEX
-		_dispatch_futex_wait(&dte->dte_value, UINT32_MAX,
-				NULL, FUTEX_PRIVATE_FLAG);
+#ifdef __FreeBSD__
+		_dispatch_futex_wait(&dte->dte_value, UINT32_MAX, NULL, UMTX_OP_WAIT_UINT_PRIVATE);
+#else
+		_dispatch_futex_wait(&dte->dte_value, UINT32_MAX, NULL, FUTEX_PRIVATE_FLAG);
+#endif
 #endif
 	}
 #else
@@ -626,6 +701,7 @@ _dispatch_unfair_lock_lock_slow(dispatch_unfair_lock_t dul,
 		if (unlikely(_dispatch_lock_is_locked_by(cur, self))) {
 			DISPATCH_CLIENT_CRASH(0, "trying to lock recursively");
 		}
+
 		_dispatch_thread_switch(cur, flags, timeout++);
 	}
 }
@@ -685,8 +761,11 @@ _dispatch_once_wait(dispatch_once_gate_t dgo)
 		_dispatch_unfair_lock_wait(lock, (dispatch_lock)new_v, 0,
 				DLOCK_LOCK_NONE);
 #elif HAVE_FUTEX
-		_dispatch_futex_wait(lock, (dispatch_lock)new_v, NULL,
-				FUTEX_PRIVATE_FLAG);
+#ifdef __FreeBSD__
+		_dispatch_futex_wait(lock, (dispatch_lock)new_v, NULL, UMTX_OP_WAIT_UINT_PRIVATE);
+#else
+		_dispatch_futex_wait(lock, (dispatch_lock)new_v, NULL, FUTEX_PRIVATE_FLAG);
+#endif
 #else
 		_dispatch_thread_switch(new_v, 0, timeout++);
 #endif
@@ -704,7 +783,11 @@ _dispatch_gate_broadcast_slow(dispatch_gate_t dgl, dispatch_lock cur)
 #if HAVE_UL_UNFAIR_LOCK
 	_dispatch_unfair_lock_wake(&dgl->dgl_lock, ULF_WAKE_ALL);
 #elif HAVE_FUTEX
-	_dispatch_futex_wake(&dgl->dgl_lock, INT_MAX, FUTEX_PRIVATE_FLAG);
+#ifdef __FreeBSD__
+		_dispatch_futex_wake(&dgl->dgl_lock, INT_MAX, UMTX_OP_WAKE_PRIVATE);
+#else
+		_dispatch_futex_wake(&dgl->dgl_lock, INT_MAX, FUTEX_PRIVATE_FLAG);
+#endif
 #else
 	(void)dgl;
 #endif

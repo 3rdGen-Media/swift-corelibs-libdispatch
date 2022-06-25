@@ -331,6 +331,7 @@ dispatch_resume(dispatch_object_t dou)
 		return;
 	}
 	if (dx_cluster(dou._do) == _DISPATCH_QUEUE_CLUSTER) {
+		//fprintf(stderr, "dispatch_resume before _dispatch_lane_resume\n");
 		_dispatch_lane_resume(dou._dl, false);
 	}
 }

@@ -23,6 +23,8 @@
 #include "protocol.h" // _dispatch_send_wakeup_runloop_thread
 #endif
 
+#include <sys/eventfd.h>
+
 static inline void _dispatch_root_queues_init(void);
 static void _dispatch_lane_barrier_complete(dispatch_lane_class_t dqu,
 		dispatch_qos_t qos, dispatch_wakeup_flags_t flags);
@@ -2980,9 +2982,11 @@ _dispatch_lane_resume_slow(dispatch_lane_t dq)
 		}
 	});
 	dq->dq_side_suspend_cnt -= DISPATCH_QUEUE_SUSPEND_HALF;
+	fprintf(stderr, "_dispatch_lane_resume_slow before _dispatch_queue_sidelock_unlock()");
 	return _dispatch_queue_sidelock_unlock(dq);
 
 retry:
+	fprintf(stderr, "_dispatch_lane_resume_slow retry  _dispatch_queue_sidelock_unlock()");
 	_dispatch_queue_sidelock_unlock(dq);
 	return _dispatch_lane_resume(dq, false);
 }
@@ -3077,6 +3081,7 @@ _dispatch_lane_resume(dispatch_lane_t dq, bool activate)
 					if (!(old_state & DISPATCH_QUEUE_HAS_SIDE_SUSPEND_CNT)) {
 						goto over_resume;
 					}
+					//fprintf(stderr, "_dispatch_lane_resume before _dispatch_lane_resume_slow()\n");
 					return _dispatch_lane_resume_slow(dq);
 				});
 		//
@@ -3111,10 +3116,13 @@ _dispatch_lane_resume(dispatch_lane_t dq, bool activate)
 
 	if ((old_state ^ new_state) & DISPATCH_QUEUE_NEEDS_ACTIVATION) {
 		// we cleared the NEEDS_ACTIVATION bit and we have a valid suspend count
+		//fprintf(stderr, "_dispatch_lane_resume before _dispatch_lane_resume_activate()\n");
 		return _dispatch_lane_resume_activate(dq);
 	}
 
 	if (activate) {
+		//fprintf(stderr, "_dispatch_lane_resume activate true\n");
+
 		// if we're still in an activate codepath here we should have
 		// { sc:>0 na:1 }, if not we've got a corrupt state
 		if (unlikely(!_dq_state_is_suspended(new_state))) {
@@ -3122,10 +3130,13 @@ _dispatch_lane_resume(dispatch_lane_t dq, bool activate)
 		}
 		return;
 	}
+	//fprintf(stderr, "_dispatch_lane_resume after activate true\n");
 
 	if (_dq_state_is_suspended(new_state)) {
 		return;
 	}
+
+	//fprintf(stderr, "_dispatch_lane_resume after _dq_state_is_suspended\n");
 
 	if (_dq_state_is_dirty(old_state)) {
 		// <rdar://problem/14637483>
@@ -3142,10 +3153,12 @@ _dispatch_lane_resume(dispatch_lane_t dq, bool activate)
 		if (_dq_state_is_base_wlh(old_state)) {
 			_dispatch_event_loop_assert_not_owned((dispatch_wlh_t)dq);
 		}
+		//fprintf(stderr, "_dispatch_lane_resume before _dispatch_release_2\n");
 		return _dispatch_release_2(dq);
 	}
 	dispatch_assert(!_dq_state_received_sync_wait(old_state));
 	dispatch_assert(!_dq_state_in_sync_transfer(old_state));
+	//fprintf(stderr, "_dispatch_lane_resume before dx_wakeup\n");
 	return dx_wakeup(dq, _dq_state_max_qos(old_state), flags);
 
 over_resume:
@@ -3216,22 +3229,29 @@ _dispatch_lane_set_width(void *ctxt)
 void
 dispatch_queue_set_width(dispatch_queue_t dq, long width)
 {
+	fprintf(stderr, "dispatch_queue_set_width() START\n");
+
 	unsigned long type = dx_type(dq);
+	fprintf(stderr, "dispatch_queue_set_width() after dx_type\n");
+
 	if (unlikely(dx_metatype(dq) != _DISPATCH_LANE_TYPE)) {
+		fprintf(stderr, "dispatch_queue_set_width::DISPATCH_CLIENT_CRASH(type, \"Unexpected dispatch object type\")\n");
 		DISPATCH_CLIENT_CRASH(type, "Unexpected dispatch object type");
 	} else if (unlikely(type != DISPATCH_QUEUE_CONCURRENT_TYPE)) {
+		fprintf(stderr, "dispatch_queue_set_width::DISPATCH_CLIENT_CRASH(type, \"Cannot set width of a serial queue\")\n");
 		DISPATCH_CLIENT_CRASH(type, "Cannot set width of a serial queue");
 	}
+	fprintf(stderr, "dispatch_queue_set_width() after dx_metatype\n");
 
 	if (likely((int)width >= 0)) {
 		dispatch_lane_t dl = upcast(dq)._dl;
-		_dispatch_barrier_trysync_or_async_f(dl, (void*)(intptr_t)width,
-				_dispatch_lane_set_width, DISPATCH_BARRIER_TRYSYNC_SUSPEND);
+		fprintf(stderr, "dispatch_queue_set_width() before _dispatch_barrier_trysync_or_async_f()\n");
+		_dispatch_barrier_trysync_or_async_f(dl, (void*)(intptr_t)width, _dispatch_lane_set_width, DISPATCH_BARRIER_TRYSYNC_SUSPEND);
 	} else {
 		// The negative width constants need to execute on the queue to
 		// query the queue QoS
-		_dispatch_barrier_async_detached_f(dq, (void*)(intptr_t)width,
-				_dispatch_lane_set_width);
+		fprintf(stderr, "dispatch_queue_set_width() before _dispatch_barrier_async_detached_f()\n");
+		_dispatch_barrier_async_detached_f(dq, (void*)(intptr_t)width, _dispatch_lane_set_width);
 	}
 }
 
@@ -6467,12 +6487,13 @@ _dispatch_runloop_handle_is_valid(dispatch_runloop_handle_t handle)
 {
 #if TARGET_OS_MAC
 	return MACH_PORT_VALID(handle);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined (__FreeBSD__)
 	return handle >= 0;
 #elif defined(_WIN32)
 	return handle != NULL;
 #else
-#error "runloop support not implemented on this platform"
+	#pragma unused(handle)
+	assert(1==0);
 #endif
 }
 
@@ -6482,13 +6503,14 @@ _dispatch_runloop_queue_get_handle(dispatch_lane_t dq)
 {
 #if TARGET_OS_MAC
 	return ((dispatch_runloop_handle_t)(uintptr_t)dq->do_ctxt);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined (__FreeBSD__)
 	// decode: 0 is a valid fd, so offset by 1 to distinguish from NULL
 	return ((dispatch_runloop_handle_t)(uintptr_t)dq->do_ctxt) - 1;
 #elif defined(_WIN32)
 	return ((dispatch_runloop_handle_t)(uintptr_t)dq->do_ctxt);
 #else
-#error "runloop support not implemented on this platform"
+	#pragma unused(dq)
+	assert(1==0);
 #endif
 }
 
@@ -6499,13 +6521,15 @@ _dispatch_runloop_queue_set_handle(dispatch_lane_t dq,
 {
 #if TARGET_OS_MAC
 	dq->do_ctxt = (void *)(uintptr_t)handle;
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
 	// encode: 0 is a valid fd, so offset by 1 to distinguish from NULL
 	dq->do_ctxt = (void *)(uintptr_t)(handle + 1);
 #elif defined(_WIN32)
 	dq->do_ctxt = (void *)(uintptr_t)handle;
 #else
-#error "runloop support not implemented on this platform"
+	#pragma unused(dq)
+	#pragma unused(handle)
+	assert(1==0);
 #endif
 }
 
@@ -6535,7 +6559,7 @@ _dispatch_runloop_queue_handle_init(void *ctxt)
 	(void)dispatch_assume_zero(kr);
 
 	handle = mp;
-#elif defined(__linux__)
+#elif defined(__linux__) || defined (__FreeBSD__)
 	int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	if (fd == -1) {
 		int err = errno;
@@ -6566,8 +6590,6 @@ _dispatch_runloop_queue_handle_init(void *ctxt)
 		DISPATCH_INTERNAL_CRASH(GetLastError(), "CreateEventW");
 	}
 	handle = hEvent;
-#else
-#error "runloop support not implemented on this platform"
 #endif
 	_dispatch_runloop_queue_set_handle(dq, handle);
 
@@ -6589,7 +6611,7 @@ _dispatch_runloop_queue_handle_dispose(dispatch_lane_t dq)
 	kr = mach_port_destruct(mach_task_self(), mp, -1, guard);
 	DISPATCH_VERIFY_MIG(kr);
 	(void)dispatch_assume_zero(kr);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
 	int rc = close(handle);
 	(void)dispatch_assume_zero(rc);
 #elif defined(_WIN32)
@@ -6597,7 +6619,7 @@ _dispatch_runloop_queue_handle_dispose(dispatch_lane_t dq)
 	bSuccess = CloseHandle(handle);
 	(void)dispatch_assume(bSuccess);
 #else
-#error "runloop support not implemented on this platform"
+	assert(1==0);
 #endif
 }
 
@@ -6622,7 +6644,7 @@ _dispatch_runloop_queue_class_poke(dispatch_lane_t dq)
 		(void)dispatch_assume_zero(kr);
 		break;
 	}
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
 	int result;
 	do {
 		result = eventfd_write(handle, 1);
@@ -6633,7 +6655,7 @@ _dispatch_runloop_queue_class_poke(dispatch_lane_t dq)
 	bSuccess = SetEvent(handle);
 	(void)dispatch_assume(bSuccess);
 #else
-#error "runloop support not implemented on this platform"
+	assert(1==0);
 #endif
 }
 

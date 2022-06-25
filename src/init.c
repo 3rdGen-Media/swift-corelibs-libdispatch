@@ -964,7 +964,7 @@ _dispatch_continuation_get_function_symbol(dispatch_continuation_t dc)
 	return dc->dc_func;
 }
 
-#if HAVE_MACH
+#if HAVE_MACH || defined(__FreeBSD__)
 void
 _dispatch_bug_kevent_client(const char *msg, const char *filter,
 		const char *operation, int err, uint64_t ident, uint64_t udata,
@@ -1051,7 +1051,7 @@ _dispatch_bug_kevent_vanished(dispatch_unote_t du)
 			"{ %p[%s], ident: %" PRIdPTR " / 0x%" PRIxPTR ", handler: %p }",
 			dux_type(du._du)->dst_kind, dou._dq,
 			dou._dq->dq_label ? dou._dq->dq_label : "<unknown>",
-			du._du->du_ident, du._du->du_ident, func);
+			(long)du._du->du_ident, (long)du._du->du_ident, func);
 }
 
 #endif // RDAR_49023449

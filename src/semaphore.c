@@ -216,6 +216,7 @@ _dispatch_group_wait_slow(dispatch_group_t dg, uint32_t gen,
 			return 0;
 		}
 		if (rc == ETIMEDOUT) {
+			fprintf(stderr, "_dispatch_group_wait_slow ETIMEDOUT\n");
 			return _DSEMA4_TIMEOUT();
 		}
 	}
@@ -228,17 +229,21 @@ dispatch_group_wait(dispatch_group_t dg, dispatch_time_t timeout)
 
 	os_atomic_rmw_loop2o(dg, dg_state, old_state, new_state, relaxed, {
 		if ((old_state & DISPATCH_GROUP_VALUE_MASK) == 0) {
+			//fprintf(stderr, "dispatch_group_wait os_atomic_rmw_loop_give_up_with_fence()\n");
 			os_atomic_rmw_loop_give_up_with_fence(acquire, return 0);
 		}
 		if (unlikely(timeout == 0)) {
+			//fprintf(stderr, "dispatch_group_wait os_atomic_rmw_loop_give_up(_DSEMA4_TIMEOUT)\n");
 			os_atomic_rmw_loop_give_up(return _DSEMA4_TIMEOUT());
 		}
 		new_state = old_state | DISPATCH_GROUP_HAS_WAITERS;
 		if (unlikely(old_state & DISPATCH_GROUP_HAS_WAITERS)) {
+			//fprintf(stderr, "dispatch_group_wait os_atomic_rmw_loop_give_up(break)\n");
 			os_atomic_rmw_loop_give_up(break);
 		}
 	});
 
+	//fprintf(stderr, "dispatch_group_wait before _dispatch_group_wait_slow\n");
 	return _dispatch_group_wait_slow(dg, _dg_state_gen(new_state), timeout);
 }
 
